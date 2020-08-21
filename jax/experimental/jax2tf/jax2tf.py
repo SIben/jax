@@ -15,7 +15,7 @@
 
 import functools
 import string
-from typing import Any, Callable, Dict, Iterable, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Generator, Iterable, Optional, Sequence, Tuple, Union
 
 import jax
 from jax import abstract_arrays
@@ -52,6 +52,9 @@ from tensorflow.compiler.xla import xla_data_pb2  # type: ignore[import]
 # A value suitable in a TF tracing context: tf.Tensor, tf.Variable,
 # or Python scalar or numpy.ndarray. (A tf.EagerTensor is a tf.Tensor.)
 TfVal = Any
+JaxDType = Any
+TfDType = Any
+
 def _is_tfval(v: TfVal) -> bool:
   if isinstance(v, (tf.Tensor, tf.Variable)):
     return True
@@ -63,7 +66,7 @@ def _is_tfval(v: TfVal) -> bool:
   except ValueError:
     return False
 
-def _safe_convert_to_tensor(val, dtype=None):
+def _safe_convert_to_tensor(val: TfVal, dtype: Optional[TfDType] = None) -> TfVal:
   """Converts val to a Tensor.
 
   This method wraps TensorFlow's `convert_to_tensor
@@ -114,7 +117,7 @@ def _tfval_add_unit(vals: Sequence[TfValOrUnit],
   for units, see _tfval_remove_unit) or may even be a Tensor if we are building
   graphs and the NaN value is abstracted.
   """
-  def add_unit(v: TfValOrUnit, aval: core.AbstractValue):
+  def add_unit(v: TfValOrUnit, aval: core.AbstractValue) -> TfValOrUnit:
     if not core.skip_checks:
       if aval is core.abstract_unit:
         if v is not core.unit:
@@ -132,9 +135,10 @@ def _tfval_add_unit(vals: Sequence[TfValOrUnit],
 # to worry about core.unit inputs or results. The exception are primarily the
 # control-flow primitives.
 tf_impl: Dict[core.Primitive,
-              Callable[..., Any]] = {}
+              Callable[..., Union[TfValOrUnit, Sequence[TfValOrUnit]]]] = {}
 
-def convert(fun, with_gradient=False):
+def convert(fun: Callable, with_gradient: bool = False) \
+    -> Callable[..., Union[TfVal, Sequence[TfVal]]]:
   """Transforms `fun` to be executed by TensorFlow.
 
   Args:
@@ -220,7 +224,10 @@ def _interpret_fun(fun: lu.WrappedFun,
 
 
 @lu.transformation
-def _interpret_subtrace(master: core.MasterTrace, *in_vals: TfValOrUnit):
+def _interpret_subtrace(master: core.MasterTrace, *in_vals: TfValOrUnit) \
+    -> Generator[Union[Tuple[Sequence[TensorFlowTracer], Dict],
+                       Sequence[TfValOrUnit]],
+                 Sequence[TfValOrUnit], None]:
   trace = TensorFlowTrace(master, core.cur_sublevel())
   in_tracers = tuple(TensorFlowTracer(trace, val) for val in in_vals)
   outs = yield in_tracers, {}  # type: Sequence[TfValOrUnit]
@@ -245,7 +252,7 @@ def _interpret_jaxpr(jaxpr: core.TypedJaxpr, *args: TfValOrUnit) -> Sequence[TfV
 ### tracer
 
 
-def abstractify(t: Union[tf.Tensor, tf.Variable]):
+def abstractify(t: Union[tf.Tensor, tf.Variable]) -> core.ShapedArray:
   return abstract_arrays.ShapedArray(tuple(t.shape), to_jax_dtype(t.dtype))
 
 # TODO(b/26854495): pylint doesn't understand slots and inheritance.
@@ -257,7 +264,7 @@ class TensorFlowTracer(core.Tracer):
   # val: TfValOrUnit
   __slots__ = ["val"]
 
-  def __init__(self, trace: 'TensorFlowTrace', val: TfValOrUnit):
+  def __init__(self, trace: 'TensorFlowTrace', val: TfValOrUnit) -> None:
     self._trace = trace
     if val is core.unit:
       self.val = val
@@ -278,28 +285,28 @@ class TensorFlowTracer(core.Tracer):
               f"Expected {aval}, got {self.aval}")
 
   @property
-  def aval(self):
+  def aval(self) -> Union[core.AbstractUnit, core.ShapedArray]:
     if self.val is core.unit:
       return core.abstract_unit
     else:
       return abstractify(self.val)
 
-  def full_lower(self):
+  def full_lower(self) -> TensorFlowTracer:
     return self
 
 
 class TensorFlowTrace(core.Trace):
   """Trace class that underlies the jax2tf transformation."""
-  def pure(self, val: TfValOrUnit):
+  def pure(self, val: TfValOrUnit) -> TensorFlowTracer:
     """Lifts a non-Tracer into the TensorFlowTrace."""
     return TensorFlowTracer(self, val)
 
-  def lift(self, val: core.Tracer):
+  def lift(self, val: core.Tracer) -> TensorFlowTracer:
     """Lifts a core.Tracer from a lower-level master into the TensorFlowTrace."""
     # TODO(necula): this should never be needed
     return TensorFlowTracer(self, val)
 
-  def sublift(self, val: TensorFlowTracer):
+  def sublift(self, val: TensorFlowTracer) -> TensorFlowTracer:
     # TODO(necula): this should never be needed
     return TensorFlowTracer(self, val.val)
 
@@ -328,8 +335,9 @@ class TensorFlowTrace(core.Trace):
           f"{primitive}: out.aval = {out.aval}; expected {expected_out_aval}")  # type: ignore
     return out  # type: ignore
 
-  def process_call(self, call_primitive: core.Primitive, f,
-                   tracers: Sequence[TensorFlowTracer], params):
+  def process_call(self, call_primitive: core.Primitive, f: lu.WrappedFun,
+                   tracers: Sequence[TensorFlowTracer], params) \
+      -> Sequence[TensorFlowTracer]:
     assert call_primitive.multiple_results
     vals: Sequence[TfValOrUnit] = [t.val for t in tracers]
     f = _interpret_subtrace(f, self.master)
@@ -337,7 +345,9 @@ class TensorFlowTrace(core.Trace):
     return [TensorFlowTracer(self, v) for v in vals_out]
 
   def post_process_call(self, call_primitive: core.Primitive,
-                        out_tracers: Sequence[TensorFlowTracer], params):
+                        out_tracers: Sequence[TensorFlowTracer], params) \
+      -> Tuple[Sequence[TfValOrUnit], Callable[[Sequence[TfValOrUnit]],
+                                               Sequence[TensorFlowTracer]]]:
     # We encountered a call primitive, e.g., remat_call_p, whose result
     # (out_tracers) include TensorFlowTracer that were not passed through
     # its arguments (captured from the environment).
@@ -348,29 +358,32 @@ class TensorFlowTrace(core.Trace):
       return map(functools.partial(TensorFlowTracer, trace), vals)
     return vals, todo
 
-  def process_map(self, map_primitive, f, tracers, params):
+  def process_map(self, map_primitive: core.Primitive, f: Callable,
+                  tracers: Sequence[TensorFlowTracer], params):
     raise NotImplementedError("process_map")
 
-  def post_process_map(self, map_primitive, out_tracers, params):
+  def post_process_map(self, map_primitive: core.Primitive,
+                       out_tracers: Sequence[TensorFlowTracer], params):
     raise NotImplementedError("post_process_map")
 
-  def get_primitive_impl(self, p):
+  def get_primitive_impl(self, p: core.Primitive) \
+      -> Callable[..., Union[TfVal, Sequence[TfVal]]]:
     try:
       return tf_impl[p]
     except KeyError:
       msg = "TensorFlow interpretation rule for '{}' not implemented"
       raise NotImplementedError(msg.format(p))
 
-def to_tf_dtype(jax_dtype):
+def to_tf_dtype(jax_dtype: JaxDType) -> TfDType:
   if jax_dtype == jnp.bfloat16:
     return tf.bfloat16
   else:
     return tf.dtypes.as_dtype(jax_dtype)
 
-def to_jax_dtype(tf_dtype):
+def to_jax_dtype(tf_dtype: TfDType) -> JaxDType:
   return jnp.bfloat16 if tf_dtype == tf.bfloat16 else tf_dtype.as_numpy_dtype
 
-def promote_types(*values):
+def promote_types(*values: TfVal) -> Sequence[TfVal]:
   """Returns values casted to a common type using jnp.promote_types."""
   dtype = to_tf_dtype(functools.reduce(
       jnp.promote_types, (to_jax_dtype(v.dtype) for v in values)))
@@ -428,7 +441,7 @@ tf_impl[lax.ceil_p] = tf.math.ceil
 tf_impl[lax.round_p] = tf.math.round
 tf_impl[lax.nextafter_p] = tf.math.nextafter
 
-def _population_count(x):
+def _population_count(x: TfVal) -> TfVal:
   orig_dtype = x.dtype
   return tf.bitcast(tf.raw_ops.PopulationCount(x=x), orig_dtype)
 
@@ -476,7 +489,7 @@ tf_impl[lax.sub_p] = wrap_binary_op(tf.math.subtract)
 tf_impl[lax.mul_p] = wrap_binary_op(tf.math.multiply)
 
 
-def _div(lhs, rhs):
+def _div(lhs: TfVal, rhs: TfVal) -> TfVal:
   if lhs.dtype.is_integer:
     quotient = tf.math.floor_divide(lhs, rhs)
     select = tf.math.logical_and(tf.math.sign(lhs) != tf.math.sign(rhs),
@@ -486,7 +499,7 @@ def _div(lhs, rhs):
     return tf.math.truediv(lhs, rhs)
 
 
-def _rem(lhs, rhs):
+def _rem(lhs: TfVal, rhs: TfVal) -> TfVal:
   return tf.math.sign(lhs) * tf.math.floormod(tf.math.abs(lhs),
                                               tf.math.abs(rhs))
 
