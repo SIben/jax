@@ -109,7 +109,7 @@ def train(dir_path, classes):
   optimizer, params, train_ds, test_ds = init_model_and_data(dir_path, classes)
   for epoch in range(5):
     start_time = time.time()
-    train_one_epoch(optimizer, train_ds)
+    optimizer = train_one_epoch(optimizer, train_ds)
     epoch_time = time.time() - start_time
     train_acc = accuracy(predict, optimizer.target, train_ds)
     test_acc = accuracy(predict, optimizer.target, test_ds)
