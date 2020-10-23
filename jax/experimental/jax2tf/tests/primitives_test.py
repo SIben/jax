@@ -261,6 +261,10 @@ class JaxPrimitiveTest(tf_test_util.JaxToTfTestCase):
                            custom_assert=custom_assert,
                            always_custom_assert=True)
 
+  @primitive_harness.parameterized(primitive_harness.lax_select_and_scatter_add)
+  def test_select_and_scatter_add(self, harness: primitive_harness.Harness):
+    self.ConvertAndCompare(harness.dyn_fun, *harness.dyn_args_maker(self.rng()))
+
   @primitive_harness.parameterized(primitive_harness.lax_select_and_gather_add)
   @jtu.ignore_warning(category=UserWarning,
                       message="Using reduced precision for gradient.*")

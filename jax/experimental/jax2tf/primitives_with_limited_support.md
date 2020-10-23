@@ -1,6 +1,6 @@
 # Primitives with limited support
 
-*Last generated on (YYYY-MM-DD): 2020-10-14*
+*Last generated on (YYYY-MM-DD): 2020-10-23*
 
 ## Updating the documentation
 
@@ -68,8 +68,7 @@ conversion to Tensorflow.
 | scatter-mul | Missing TF support | Primitive is unimplemented in TF | complex64 | TPU |
 | select_and_gather_add | Missing TF support | Primitive is unimplemented in TF | float32, float64 | TPU |
 | select_and_gather_add | Missing TF support | Primitive is unimplemented in TF | float64 | CPU, GPU |
-| shift_right_arithmetic | Possible incorrect results | If first operand has higher-order bit set the result will not have it set on TPU (JAX/XLA bug) | uint16, uint8 | TPU |
-| shift_right_logical | Possible incorrect results | If first operand is negative the result will be negative on TPU (JAX/XLA bug) | int16, int8 | TPU |
+| select_and_scatter_add | Missing TF support | Primitive is unimplemented in TF | uint16, uint32, uint64 | CPU, GPU, TPU |
 | sinh | Missing TF support | Primitive is unimplemented in TF | float16 | CPU, GPU, TPU |
 | sort | Missing TF support | Primitive is unimplemented in TF | complex128, complex64 | CPU, GPU, TPU |
 | sort | Missing TF support | Primitive is unimplemented in TF; only sorting on last dimension is supported for XlaSort | ALL | CPU, GPU, TPU |
@@ -90,4 +89,4 @@ The conversion of the following JAX primitives is not yet implemented:
 The following JAX primitives have a defined conversion but are known to be
 missing tests:
 
-`argmax`, `argmin`, `broadcast`, `clamp`, `complex`, `conj`, `custom_lin`, `device_put`, `imag`, `integer_pow`, `real`, `rev`, `select_and_scatter`, `select_and_scatter_add`, `stop_gradient`, `tie_in`
+`argmin`, `broadcast`, `clamp`, `complex`, `conj`, `custom_lin`, `device_put`, `integer_pow`, `rev`, `select_and_scatter`, `tie_in`
