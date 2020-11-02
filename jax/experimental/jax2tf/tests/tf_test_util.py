@@ -250,7 +250,7 @@ class JaxToTfTestCase(jtu.JaxTestCase):
   def CheckShapePolymorphism(self, f_jax: Callable, *,
                              input_signature: Sequence[tf.TensorSpec],
                              in_shapes: Optional[Sequence[Any]],
-                             expected_output_signature: tf.TensorSpec):
+                             expected_output_signature: Optional[tf.TensorSpec] = None):
     """Convert a function using polymorphic shapes.
 
     Args:

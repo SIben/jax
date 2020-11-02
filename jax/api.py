@@ -1562,15 +1562,25 @@ def mask(fun: Callable, in_shapes, out_shape=None) -> Callable:
       return tree_unflatten(out_tree, outs)
   return wrapped_fun
 
+NpDType = Any
 @curry
-def shapecheck(in_shapes, out_shape, fun: Callable):
+def shapecheck(in_shapes, out_shape, fun: Callable,
+               dtypes: Optional[Sequence[NpDType]] = None):
+  if dtypes is None:
+    dtypes = [np.float32] * len(in_shapes)
+  else:
+    assert len(dtypes) == len(in_shapes), (
+        f"Expected {len(in_shapes)} dtypes but got {len(dtypes)}.")
+
   _check_callable(fun)
   in_shapes, in_tree = tree_flatten(in_shapes)
   in_shapes = map(masking.parse_spec, in_shapes)
   out_specs, out_spec_tree = tree_flatten(out_shape)
   out_specs = map(masking.parse_spec, out_specs)
   flat_fun, out_tree_thunk = flatten_fun_nokwargs(lu.wrap_init(fun), in_tree)
-  avals = map(partial(ShapedArray, dtype=np.float32), in_shapes)
+  avals = map(lambda typed_inshape: (
+                  ShapedArray(typed_inshape[0], dtype=typed_inshape[1])),
+              zip(in_shapes, dtypes))
   out_shapes = [o.shape for o in pe.abstract_eval_fun(flat_fun.call_wrapped, *avals)]
   masking.check_shapes(map(tuple, out_specs), out_spec_tree,
                        map(tuple, out_shapes), out_tree_thunk())

@@ -18,7 +18,9 @@ NumPy (lax_reference) or TensorFlow.
 """
 
 import operator
-from typing import Any, Callable, Dict, Iterable, Optional, NamedTuple, Sequence, Tuple, Union
+import sys
+from typing import Any, Callable, Dict, Iterable, Optional, NamedTuple,\
+                   Sequence, Tuple, Union
 
 from functools import partial
 
@@ -133,7 +135,8 @@ class Harness:
 
 
 def parameterized(harness_group: Iterable[Harness],
-                  one_containing : Optional[str] = None):
+                  one_containing: Optional[str] = None,
+                  prefix: Optional[str] = None):
   """Decorator for tests.
 
   The tests receive a `harness` argument.
@@ -143,18 +146,37 @@ def parameterized(harness_group: Iterable[Harness],
   parameterized tests is reduced to one test, whose name is not decorated
   to make it easier to pick for running.
   """
+  prefix = prefix or ""
   cases = tuple(
-    dict(testcase_name=harness.name if one_containing is None else "",
+    dict(testcase_name=prefix + harness.name if one_containing is None else "",
          harness=harness)
     for harness in harness_group
-    if one_containing is None or one_containing in harness.name)
+    if one_containing is None or one_containing in (prefix + harness.name))
   if one_containing is not None:
     if not cases:
       raise ValueError(f"Cannot find test case with name containing {one_containing}."
                        "Names are:"
-                       "\n".join([harness.name for harness in harness_group]))
+                       "\n".join([prefix + harness.name
+                                  for harness in harness_group]))
     cases = cases[0:1]
   return testing.parameterized.named_parameters(*cases)
+
+def gather_all_harnesses():
+  """TODO: docstring"""
+  all_harnesses = []
+  for key in globals():
+    try:
+      potential_harnesses = globals()[key]
+      if (isinstance(potential_harnesses, Sequence) and
+          isinstance(potential_harnesses[0], Harness)):
+        for harness in potential_harnesses:
+          # TODO: find other solution, this is not ideal.
+          harness.name = f"{key}_{harness.name}"
+        all_harnesses += potential_harnesses
+        #all_harnesses += list(map(lambda p: (key, p), potential_harnesses))
+    except:
+      pass
+  return all_harnesses
 
 ### Harness definitions ###
 ###

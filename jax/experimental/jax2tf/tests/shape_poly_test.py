@@ -14,7 +14,7 @@
 """Tests for the jax2tf conversion for control-flow primitives."""
 
 from absl.testing import absltest
-from typing import Dict, Sequence
+from typing import Dict, List, Sequence, Sized, Union
 
 import functools
 import operator
@@ -22,7 +22,10 @@ import re
 
 import jax
 from jax import core
+from jax import shapecheck
 from jax.experimental import jax2tf
+from jax.experimental.jax2tf.tests import correctness_stats
+from jax.experimental.jax2tf.tests import primitive_harness
 from jax import lax
 import jax.numpy as jnp
 from jax import test_util as jtu
@@ -34,6 +37,7 @@ from jax.interpreters import masking
 from jax.experimental.jax2tf.tests import tf_test_util
 
 import tensorflow as tf  # type: ignore[import]
+import string
 import unittest
 
 from jax.config import config
@@ -591,6 +595,92 @@ class ShapePolyPrimitivesTest(tf_test_util.JaxToTfTestCase):
 
     self.assertAllClose(f(x, i), f_tf(x, i))
 
+  #@primitive_harness.parameterized(primitive_harness.gather_all_harnesses())
+  def test_batch_polymorphism_masking(self, harness: primitive_harness.Harness):
+    def _make_batched_shapes(arr: Union[jnp.ndarray, Sequence[jnp.ndarray]]):
+      if isinstance(arr, jnp.ndarray):
+        return '(b,' + ','.join(list(map(str, arr.shape))) + ')'
+      return list(
+          map(lambda a: '(b,' + ",".join(list(map(str, a.shape))) + ')', arr))
+
+    fun, args = harness.dyn_fun, harness.dyn_args_maker(self.rng())
+    dtypes = list(map(lambda arg: arg.dtype, args))
+    try:
+      output = fun(*args)
+    except:
+      print(f"Failure for harness {harness.name}")
+      return
+    batched_input_shapes = _make_batched_shapes(args)
+    batched_output_shapes = _make_batched_shapes(output)
+
+    print(batched_input_shapes, batched_output_shapes)
+    #batched_args = list(map(lambda x: jnp.stack(x, x), args))
+    batched_fun = jax.vmap(harness.dyn_fun)
+
+    jax.shapecheck(batched_input_shapes, batched_output_shapes, dtypes=dtypes)(batched_fun)
+    #batched_output = batched_fun(*batched_args)
+
+  @primitive_harness.parameterized(primitive_harness.gather_all_harnesses())
+  def test_harnesses(self, harness: primitive_harness.Harness):
+    def convert_if_bfloat16(v):
+      if hasattr(v, "dtype"):
+        return tf.convert_to_tensor(np.array(v, jnp.float32) if
+                                      v.dtype == jnp.bfloat16 else v,
+                                    jax2tf.jax2tf.to_tf_dtype(v.dtype))
+      return v
+    
+    def make_batched_input_signature(*tf_args) -> List[tf.TensorSpec]:
+      # tf_args can be PyTrees
+      def make_one_arg_signature(tf_arg):
+        return tf.TensorSpec([None] + list(np.shape(tf_arg)), tf_arg.dtype)
+      return tf.nest.map_structure(make_one_arg_signature, list(tf_args))
+
+    def make_in_shapes(*input_signatures) -> List[str]:
+      def make_one_signature_in_shape(input_signature):
+        return "(batch," + ",".join(["_"] * (len(input_signature.shape) - 1)) + ")"
+      return tf.nest.map_structure(make_one_signature_in_shape, list(input_signatures))
+
+    original_impl = jax2tf.jax2tf.TensorFlowTrace.get_primitive_impl
+
+    # Monkey-patch jax2tf.TensorFlowTrace.get_primitive_impl to wrap the
+    # resulting primitive in a categorizer.
+    def _new_get_primitive_impl(s, p):
+      impl, impl_needs_avals = original_impl(s, p)
+      return correctness_stats.collect_limitations(p, impl), impl_needs_avals
+    jax2tf.jax2tf.TensorFlowTrace.get_primitive_impl = _new_get_primitive_impl  # type: ignore
+
+    def restore_get_primitive_impl():
+      jax2tf.jax2tf.TensorFlowTrace.get_primitive_impl = original_impl
+
+    # Restore the original jax2tf.TensorFlowTrace.get_primitive_impl
+    # implementation at the end of the test.
+    self.addCleanup(restore_get_primitive_impl)
+
+    def expected_missing_tf_support(lim: correctness_stats.Limitation):
+      return (lim.error_type == correctness_stats.CATEGORY_MISSING_TF_SUPPORT and
+              self.tf_default_device.device_type in lim.devices)
+    def expected_possible_incorrect(lim: correctness_stats.Limitation):
+      return (lim.error_type == correctness_stats.CATEGORY_POSSIBLE_INCORRECT_RESULTS and
+              self.tf_default_device.device_type in lim.devices)
+
+    args = harness.dyn_args_maker(self.rng())
+    tf_args = tf.nest.map_structure(convert_if_bfloat16, args)
+
+    try:
+      result_jax = harness.dyn_fun(*args)
+      result_tf = jax2tf.convert(harness.dyn_fun)(*tf_args)
+    except Exception as e:
+      raise unittest.SkipTest("Skipping shapecheck, specialized exec fails")
+
+    f = jax.vmap(harness.dyn_fun)
+    input_signature = make_batched_input_signature(*tf_args)
+    in_shapes = make_in_shapes(*input_signature)
+    tf_batched_args = tf.nest.map_structure(
+        lambda arg: tf.expand_dims(arg, 0), tf_args)
+
+    f_tf = self.CheckShapePolymorphism(f, input_signature=input_signature,
+                                       in_shapes=in_shapes)
+    result_tf = f_tf(*tf_batched_args)
 
 if __name__ == "__main__":
   absltest.main(testLoader=jtu.JaxTestLoader())
