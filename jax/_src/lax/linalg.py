@@ -732,7 +732,11 @@ def _lu_python(x):
   m, n = x.shape[-2:]
   batch_dims = x.shape[:-2]
   if len(batch_dims) > 0:
-    batch_size = np.prod(batch_dims, dtype=np.int64)
+    # TODO: do better, temp fix.
+    batch_size = 1
+    for batch_dim in batch_dims:
+      batch_size *= batch_dim
+    #np.prod(batch_dims, dtype=np.int64)
     lu, pivot, perm = api.vmap(_lu_blocked)(lax.reshape(x, (batch_size, m, n)))
     lu = lax.reshape(lu, batch_dims + (m, n))
     pivot = lax.reshape(pivot, batch_dims + (min(m, n),))

@@ -2016,7 +2016,7 @@ def _triangular_solve(a: TfVal, b: TfVal, *, left_side: bool, lower: bool,
                       transpose_a: bool, conjugate_a: bool,
                       unit_diagonal: bool):
   if unit_diagonal:
-    a = tf.linalg.set_diag(a, tf.ones(a.shape[:-1], dtype=a.dtype))
+    a = tf.linalg.set_diag(a, tf.ones(tf.shape(a)[:-1], dtype=a.dtype))
   if not left_side:
     rank = len(a.shape)
     transpose_dimensions = list(range(rank - 2)) + [rank - 1, rank - 2]
