@@ -876,7 +876,8 @@ tf_impl[lax.bessel_i0e_p] = tf.math.bessel_i0e
 tf_impl[lax.bessel_i1e_p] = tf.math.bessel_i1e
 
 tf_impl[lax.complex_p] = tf.complex
-tf_impl[lax.conj_p] = tf.math.conj
+# TODO: add tests
+tf_impl[lax.conj_p] = lambda x, **kwargs: tf.math.conj(x)
 tf_impl[lax.real_p] = tf.math.real
 tf_impl[lax.imag_p] = tf.math.imag
 
