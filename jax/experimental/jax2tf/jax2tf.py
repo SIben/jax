@@ -1994,7 +1994,7 @@ tf_impl[lax_linalg.eig_p] = _eig
 
 def _eigh(operand: TfVal, lower: bool):
   if operand.shape[-1] == 0:
-    v, w = operand, tf.reshape(operand, operand.shape[:-1])
+    v, w = operand, tf.reshape(operand, tf.shape(operand)[:-1])
   else:
     if not lower:
       operand = tf.linalg.adjoint(operand)
