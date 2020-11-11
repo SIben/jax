@@ -705,6 +705,11 @@ class ShapePolyPrimitivesTest(tf_test_util.JaxToTfTestCase):
     except Exception as e:
       raise unittest.SkipTest("Skipping shapecheck, specialized exec fails")
 
+    if "lax_pad_" in harness.name:
+      raise unittest.SkipTest("Unimplemented batching rule for pad")
+    if "lax_slice_" in harness.name:
+      raise unittest.SkipTest("Some error in TF")
+
     f = jax.vmap(harness.dyn_fun)
     input_signature = make_batched_input_signature(*tf_args)
     in_shapes = make_in_shapes(*input_signature)
