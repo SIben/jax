@@ -16,7 +16,8 @@ import atexit
 import contextlib
 import logging
 import numpy as np
-from typing import Any, Callable, List, Optional, Sequence, Tuple
+import time
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import tensorflow as tf  # type: ignore[import]
 
 import jax
@@ -31,6 +32,51 @@ from jax import numpy as jnp
 
 import os
 
+benchmarks: List[Tuple[str, Dict[str, float]]]
+benchmarks = []
+
+def log_benchmarks(output_file: str, template_file: str) -> None:
+  def _pad_cell(cell_content, length, padchar=' '):
+    assert len(cell_content) <= length, str((cell_content, length))
+    return cell_content + (length - len(cell_content)) * padchar
+
+  precision = 8
+  modes = ('JAX', 'TF eager', 'TF graph', 'TF compiled')
+
+  lines = [ ['Test name'] + list(modes)
+          , ['---'] * len(modes) + 1
+          ]
+  pad_len = {k: max(len(k), precision) for k in lines[0]}
+  for test_name, benchmark in sorted(benchmarks, key=lambda b: b[0]):
+    benchmark_line = [test_name]
+    pad_len['Test name'] = max(pad_len['Test name'], len(test_name))
+    for mode in modes:
+      #pad_len[mode] = max(len(str(benchmark[mode])), pad_len[mode])
+      benchmark_line.append(str(benchmark[mode])[:precision])
+    lines.append(benchmark_line)
+
+  columns = lines[0][:]
+  for line in lines:
+    for i in range(len(columns)):
+      line[i] = _pad_cell(line[i], pad_len[columns[i]])
+
+  table = '\n'.join(list(map(
+      lambda line: '| ' + ' | '.join(line).strip() + ' |', lines)))
+
+  with open(template_file, 'r') as f:
+    output = f.read()
+
+  output = output.replace('{{benchmarks}}', table)
+
+  with open(output_file, 'w') as f:
+    f.write(output)
+
+if os.getenv('JAX2TF_OUTPUT_BENCHMARKS') is not None:
+  output_file = os.path.join(os.path.dirname(__file__),
+                             '../g3doc/micro_benchmarks_of_primitives.md')
+  template_file = os.path.join(os.path.dirname(__file__),
+                               '../g3doc/micro_benchmarks_of_primitives.md.template')
+  atexit.register(log_benchmarks, output_file, template_file)
 
 if os.getenv('JAX2TF_OUTPUT_LIMITATIONS') is not None:
   output_file = os.path.join(os.path.dirname(__file__),
@@ -56,23 +102,33 @@ def _make_tf_input_signature(*tf_args) -> List[tf.TensorSpec]:
     return tf.TensorSpec(np.shape(tf_arg), tf_arg.dtype)
   return tf.nest.map_structure(_make_one_arg_signature, list(tf_args))
 
-def _run_tf_function(func_tf: Callable, *tf_args, mode: str):
+def _build_tf_function(func_tf: Callable, *tf_args, mode: str,
+                       concrete: bool = False):
   if mode == "eager":
-    return func_tf(*tf_args)
-  elif mode == "graph":
-    return tf.function(
-      func_tf, autograph=False,
-      input_signature=_make_tf_input_signature(*tf_args))(*tf_args)
-  elif mode == "compiled":
-    # Adding an explicit input_signature prevents TF from constant-folding
-    # the computation eagerly before compilation
-    return tf.function(
-      func_tf, autograph=False,
-      experimental_compile=True,
-      input_signature=_make_tf_input_signature(*tf_args))(*tf_args)
+    return func_tf
   else:
-    assert False, (
-        f"Expected 'eager', 'graph', or 'compiled' for mode: got '{mode}'")
+    result_fun = None
+    if mode == "graph":
+      result_fun = tf.function(
+          func_tf, autograph=False,
+          input_signature=_make_tf_input_signature(*tf_args))
+    elif mode == "compiled":
+      # Adding an explicit input_signature prevents TF from constant-folding
+      # the computation eagerly before compilation
+      result_fun = tf.function(
+          func_tf, autograph=False,
+          experimental_compile=True,
+          input_signature=_make_tf_input_signature(*tf_args))
+    else:
+      assert False, (
+          f"Expected 'eager', 'graph', or 'compiled' for mode: got '{mode}'")
+    if concrete:
+      return result_fun.get_concrete_function(*tf_args)
+    else:
+      return result_fun
+
+def _run_tf_function(func_tf: Callable, *tf_args, mode: str):
+  return _build_tf_function(func_tf, *tf_args, mode=mode)(*tf_args)
 
 class JaxToTfTestCase(jtu.JaxTestCase):
   def setUp(self):
@@ -180,6 +236,53 @@ class JaxToTfTestCase(jtu.JaxTestCase):
 
     # result_tf is None here if an expected limitation was encountered.
     return result_tf
+
+  def ConvertAndBenchmark(self, func_jax: Callable, *args,
+                          enable_xla: bool = True,
+                          nb_runs: int = 10):
+    assert nb_runs != 0
+    def benchmark(func: Callable, *args):
+      avg_time = 0
+      for _ in range(nb_runs):
+        start = time.time()
+        func(*args)
+        end = time.time()
+        avg_time += (end - start)
+      return avg_time / float(nb_runs)
+
+    # Jitting
+    result_jax = jax.jit(func_jax)(*args)
+
+    func_jax_bur = None
+
+    if isinstance(result_jax, tuple):
+      result_jax[0].block_until_ready()
+      func_jax_bur = (
+          lambda *args: jax.jit(func_jax)(*args)[0].block_until_ready())
+    else:
+      result_jax.block_until_ready()
+      func_jax_bur = lambda *args: jax.jit(func_jax)(*args).block_until_ready()
+
+    results = dict()
+    results["JAX"] = benchmark(func_jax_bur, *args)
+
+    func_tf = jax2tf.convert(func_jax, enable_xla=enable_xla)
+
+    tf_args = _make_tf_args(args)
+    for mode in ("eager", "graph", "compiled"):
+      try:
+        concrete_func_tf = _build_tf_function(func_tf, *tf_args, mode=mode,
+                                              concrete=True)
+        results[f"TF {mode}"] = benchmark(concrete_func_tf, *tf_args)
+      except:
+        return
+
+    test_name = os.environ.get('PYTEST_CURRENT_TEST')
+    if test_name is None:
+      return
+    else:
+      test_name = test_name.split(':')[-1].split(' ')[0]
+    benchmarks.append((f"`{test_name}`", results))
 
   def ConvertAndCompare(self, func_jax: Callable, *args,
                         custom_assert: Optional[Callable] = None,

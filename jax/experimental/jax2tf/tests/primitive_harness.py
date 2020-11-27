@@ -145,7 +145,8 @@ def parameterized(harness_group: Iterable[Harness],
   to make it easier to pick for running.
   """
   cases = tuple(
-    dict(testcase_name=harness.name if one_containing is None else "",
+    dict(testcase_name=harness.name.replace(' ', '') if one_containing is None
+                                                     else "",
          harness=harness)
     for harness in harness_group
     if one_containing is None or one_containing in harness.name)
