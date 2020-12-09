@@ -929,7 +929,12 @@ tf_impl[lax.conj_p] = _conj
 tf_impl[lax.real_p] = tf.math.real
 tf_impl[lax.imag_p] = tf.math.imag
 
-tf_impl[lax.add_p] = tf.math.add
+
+def _make_annotation(*args):
+  return "JAX_" + "20".join(arg.encode().replace(b' ', b'').hex()
+                            for arg in args)
+
+tf_impl[lax.add_p] = functools.partial(tf.math.add, name=_make_annotation('add_p'))
 tf_impl[lax.sub_p] = tf.math.subtract
 tf_impl[lax.mul_p] = tf.math.multiply
 
@@ -1291,9 +1296,9 @@ def _conv_general_dilated(lhs, rhs, window_strides, padding, lhs_dilation,
 
 tf_impl_with_avals[lax.conv_general_dilated_p] = _conv_general_dilated
 
-
 def _dot_general(lhs, rhs, dimension_numbers, precision):
   """Implementation of lax.dot_general_p in terms of tf.linalg.einsum."""
+  annotation = _make_annotation("dot_general_p", f"dimension_numbers={dimension_numbers}", f"precision={precision}")
   del precision
   (lhs_contracting, rhs_contracting), (lhs_batch, rhs_batch) = dimension_numbers
   lhs_dim, rhs_dim = len(lhs.shape), len(rhs.shape)
@@ -1307,43 +1312,6 @@ def _dot_general(lhs, rhs, dimension_numbers, precision):
   # 4) the number of non-batch dimensions in both tensors is either 1 or 2
   # 5) the contracting dimensions are consistent with those of a classic
   #    matrix/matrix, vector/matrix or matrix/vector multiplication.
-  if (not lhs.dtype in [tf.bfloat16, tf.int32]
-      and lhs_batch == rhs_batch == tuple(range(len(lhs_batch)))
-      and lhs_dim - rhs_dim in [-1, 0, 1]
-      and 1 <= lhs_dim - len(lhs_batch) <= 2
-      and 1 <= rhs_dim - len(rhs_batch) <= 2
-      and lhs_contracting == (len(lhs.shape) - 1,)
-      and rhs_contracting == (len(lhs_batch),)):
-        # All the inputs to tf.linalg.matmul must have 2 inner dimensions,
-        # after their batch dimensions, so we need to expand the dimensions
-        # appropriately. We can get to this branch with three combinations of
-        # inner shapes:
-        # - lhs.inner_shape == [a, b], rhs.inner_shape == [b, c]
-        #   - in this case, the resulting inner shape is [a, c];
-        # - lhs.inner_shape == [b]   , rhs.inner_shape == [b, c]
-        #   - in this case, we need to expand lhs to [1, b], and the resulting
-        #     shape is [c]. We need to squeeze the result of tf.linalg.matmul
-        #     as it will have shape [1, c];
-        # - lhs.shape == [batch] + [a, b], rhs.shape == [batch] + [b]
-        #   - in this case, we need to expand rhs to [b, 1], and the resulting
-        #     shape is [a]. We need to squeeze the result of tf.linalg.matmul
-        #     as it will have shape [a, 1];
-        # - lhs.shape == [batch] + [b]   , rhs.shape == [batch] + [b]
-        #   - in this case, we need to expand lhs to [1, b] and rhs to [b, 1],
-        #     and the resulting shape is (). We need to squeeze the result of
-        #     tf.linalg.matmul as it will have shape [1, 1].
-        squeeze_idxs = []
-        if lhs_dim - len(lhs_batch) == 1:
-          lhs = tf.expand_dims(lhs, lhs_dim - 1)
-          squeeze_idxs.append(len(lhs.shape) - 2)
-        if rhs_dim - len(rhs_batch) == 1:
-          rhs = tf.expand_dims(rhs, rhs_dim - 2)
-          squeeze_idxs.append(len(rhs.shape) - 1)
-        result = tf.linalg.matmul(lhs, rhs)
-        if len(squeeze_idxs) != 0:
-          result = tf.squeeze(result, squeeze_idxs)
-        return result
-
   new_id = iter(string.ascii_letters)
   lhs_axis_ids = [next(new_id) for _ in lhs.shape]
   rhs_axis_ids = [next(new_id) for _ in rhs.shape]
@@ -1373,7 +1341,7 @@ def _dot_general(lhs, rhs, dimension_numbers, precision):
   spec = "{},{}->{}".format("".join(lhs_axis_ids),
                             "".join(rhs_axis_ids),
                             "".join(out_axis_ids))
-  return tf.linalg.einsum(spec, lhs, rhs)
+  return tf.linalg.einsum(spec, lhs, rhs, name=annotation)
 tf_impl[lax.dot_general_p] = _dot_general
 
 
